@@ -1,4 +1,4 @@
-# AI e‑Book Generator (Self‑Citing Edition)
+# AI e‑Book Generator
 
 Generate a full‑length e‑book from a **single idea**. The script plans the outline, drafts each chapter with continuity prompts, and assembles the manuscript to Markdown (plus optional EPUB/DOCX/PDF). It now includes **Auto‑Cite**: per‑chapter literature search (Crossref) with strict in‑text citations (e.g., `[@smith2021]`) and an auto‑compiled **References** chapter — no manual BibTeX required (though you can still supply your own sources).
 
@@ -174,4 +174,4 @@ Run `python ebook_generator.py -h` for full help. Key options:
 ---
 
 ## License
-MIT (or your preferred license).
+MIT

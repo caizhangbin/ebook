@@ -62,7 +62,7 @@ python ebook_generator.py \
   --reading-level "university" \
   --style "scholarly, rigorous, precise" \
   --min-words 50000 --max-words 60000 \
-  --backend openai --model gpt-5-thinking \
+  --backend openai --model gpt-5 \
   --auto-cite \
   --outdir ./book_out
 ```

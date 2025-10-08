@@ -73,14 +73,13 @@ python ebook_generator.py \
 **200‑page target (~50–60k words)**
 
 ```bash
-export OPENAI_API_KEY=sk-...   # make sure this is set
 python ebook_generator.py \
   --idea "Your idea here" \
-  --backend openai --model gpt-5-thinking \
   --min-words 50000 --max-words 60000 \
-  --temperature 0.7 \
+  --genre "textbook" --audience "upper-undergrad/grad" \
+  --style "scholarly, clear" \
+  --backend openai --model gpt-4.1 \
   --outdir ./book_out_200p
-
 ```
 
 **Resume a run** (safe to interrupt and continue later):
@@ -160,7 +159,30 @@ book_out/
   * Change “24–36” to “16–22” chapters.
   * Set chapter `target_words` to **2,500–3,000**.
 
----
+## Reading level presets & examples
+
+`--reading-level` is free‑form text (no hard‑coded list), so you can write anything (e.g., "grade 9", "university"). Here are practical presets you can use:
+
+* **Elementary** – very simple sentences; everyday vocabulary.
+* **Middle school** – short paragraphs; concrete examples.
+* **High school (grade 9–12)** – general academic tone; light jargon.
+* **Grade 8 / Grade 10** – common fixed points for outreach material.
+* **College / Undergraduate** – more precise terminology; brief citations.
+* **University (upper‑undergrad & graduate)** – formal register; definitions; references.
+* **Professional / Technical** – domain‑specific jargon; standards/specs when needed.
+* **Executive / Policy** – concise, decision‑oriented summaries; minimal technical detail.
+
+**Examples**
+
+```bash
+--reading-level "middle school"
+--reading-level "grade 10"
+--reading-level "college"
+--reading-level "university"
+--reading-level "professional/technical"
+```
+
+Tip: Pair reading level with `--style` for best control, e.g., `--style "scholarly, rigorous, precise"` for university level.
 
 ## Architecture
 
@@ -210,4 +232,6 @@ Run `python ebook_generator.py -h` for full help. Key options:
 
 ---
 
+## License
 
+MIT

@@ -234,4 +234,4 @@ Run `python ebook_generator.py -h` for full help. Key options:
 
 ## License
 
-MIT (or your preferred license).
+MIT

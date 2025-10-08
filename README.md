@@ -1,147 +1,110 @@
-# AI e‑Book Generator
+# AI e‑Book Generator (Self‑Citing Edition)
 
-Generate a full‑length e‑book from a **single idea**. This tool plans the book, drafts each chapter with continuity prompts, and assembles the manuscript (Markdown) with optional exports (EPUB/DOCX/PDF). It supports **24–36 chapters** for ~400 pages (~110k words) or fewer chapters for ~200 pages (~50–60k words).
-
-> Works with OpenAI, Anthropic, or local models via Ollama.
+Generate a full‑length e‑book from a **single idea**. The script plans the outline, drafts each chapter with continuity prompts, and assembles the manuscript to Markdown (plus optional EPUB/DOCX/PDF). It now includes **Auto‑Cite**: per‑chapter literature search (Crossref) with strict in‑text citations (e.g., `[@smith2021]`) and an auto‑compiled **References** chapter — no manual BibTeX required (though you can still supply your own sources).
 
 ---
 
 ## Features
-
-* **Outline‑first workflow** → metadata → synopsis → parts → chapters → sections → scenes.
-* **Citations‑ready** (optional): supply BibTeX/JSON; model cites only known keys (e.g., `[@key]`); automatic **References** chapter.
-* **Resumable**: checkpointed JSONL; safe to stop & resume.
-* **Pluggable backends**: OpenAI, Anthropic, or Ollama/local via a common interface.
-* **Style controls**: genre, audience, reading level, tone.
-* **Multiple outputs**: Markdown (always), EPUB/DOCX/PDF (optional deps).
+- **Outline‑first workflow** → metadata → synopsis → parts → chapters → sections.
+- **Self‑citing mode (`--auto-cite`)**
+  - Searches **Crossref** per chapter for relevant papers (configurable budget).
+  - Populates a local bibliography and instructs the model to **cite only known keys**.
+  - Appends a **References** chapter containing exactly the cited sources.
+- **Resumable**: checkpointed JSONL; safe to stop & resume.
+- **Pluggable backends**: OpenAI, Anthropic, or local Ollama.
+- **Style controls**: genre, audience, reading level, tone.
+- **Multiple outputs**: Markdown (always), optional EPUB/DOCX/PDF (lightweight exporters).
 
 ---
 
 ## Requirements
-
-* Python 3.9+
-* One LLM backend (choose at least one):
-
-  * OpenAI (`OPENAI_API_KEY`)
-  * Anthropic (`ANTHROPIC_API_KEY`)
-  * Ollama (local server at `http://localhost:11434`)
+- Python 3.9+
+- One LLM backend (choose at least one):
+  - OpenAI (`OPENAI_API_KEY`)
+  - Anthropic (`ANTHROPIC_API_KEY`)
+  - Ollama (local, `http://localhost:11434`)
 
 ### Install
-
 ```bash
-# Core
-pip install pydantic==2.* rich==13.* tqdm==4.* tenacity==8.* python-dateutil==2.* requests==2.*
+# Core deps
+python -m pip install 'pydantic==2.*' 'rich==13.*' 'tqdm==4.*' 'tenacity==8.*' 'python-dateutil==2.*' 'requests==2.*'
 
-# Choose at least one backend
-pip install openai==1.*            # OpenAI
-# pip install anthropic==0.*       # Anthropic
-# (Ollama uses requests over HTTP; pull a model with `ollama pull llama3.1`)
+# Backend (pick one)
+python -m pip install 'openai==1.*'             # OpenAI
+# python -m pip install 'anthropic==0.*'        # Anthropic
+# (Ollama uses HTTP; no extra pip package)
 
 # Optional exports
-pip install ebooklib==0.* markdown==3.* python-docx==1.* reportlab==4.*
+python -m pip install 'ebooklib==0.*' 'markdown==3.*' 'python-docx==1.*' 'reportlab==4.*' 'beautifulsoup4==4.*'
 
-# Optional bibliography
-pip install bibtexparser==1.* beautifulsoup4==4.*
+# Optional: if you plan to pass --bibtex
+python -m pip install 'bibtexparser==1.*'
 ```
+> zsh users: quote the `==1.*` style pins (as shown) to avoid globbing errors.
 
 ### Configure keys
-
 ```bash
-export OPENAI_API_KEY=sk-...        # if using OpenAI
-# or
-export ANTHROPIC_API_KEY=...        # if using Anthropic
+# OpenAI
+export OPENAI_API_KEY="sk-..."
+# Anthropic (if used)
+# export ANTHROPIC_API_KEY="..."
 ```
 
 ---
 
 ## Quick start
-
-**400‑page target (~110k words)**
-
+### A. Quality‑focused (OpenAI, 200 pages ~50–60k words)
 ```bash
 python ebook_generator.py \
   --idea "A microbiologist uses AI to decode the hidden ecology of dairy farm microbes" \
-  --genre "popular science" \
-  --audience "curious adults" \
-  --reading-level "grade 10" \
-  --style "engaging, clear, lightly humorous" \
-  --min-words 105000 --max-words 125000 \
-  --backend openai --model gpt-4.1 \
+  --genre "textbook" \
+  --audience "upper-undergrad and graduate students" \
+  --reading-level "university" \
+  --style "scholarly, rigorous, precise" \
+  --min-words 50000 --max-words 60000 \
+  --backend openai --model gpt-5-thinking \
+  --auto-cite \
   --outdir ./book_out
 ```
 
-**200‑page target (~50–60k words)**
-
+### B. Budget/Local (Ollama, smoke test ~20–30k words)
 ```bash
+ollama pull llama3.1
 python ebook_generator.py \
   --idea "Your idea here" \
-  --min-words 50000 --max-words 60000 \
-  --genre "textbook" --audience "upper-undergrad/grad" \
-  --style "scholarly, clear" \
-  --backend openai --model gpt-4.1 \
-  --outdir ./book_out_200p
+  --genre "popular science" --audience "curious adults" \
+  --reading-level "grade 10" --style "engaging, clear" \
+  --min-words 20000 --max-words 30000 \
+  --backend ollama --model llama3.1 \
+  --auto-cite \
+  --outdir ./book_out_local
 ```
 
-**Resume a run** (safe to interrupt and continue later):
-
+### C. Resume a run
 ```bash
 python ebook_generator.py --resume --outdir ./book_out
 ```
 
 ---
 
-## Citations & References (optional)
+## Self‑Citing: how it works
+- When you pass `--auto-cite`, the generator queries **Crossref** using your chapter title + key points.
+- It builds a small per‑chapter bibliography (deduped by DOI) and exposes the keys to the model.
+- The prompt **forbids fabricated citations** and allows citing only known keys (e.g., `[@garcia2020_t7ss]`).
+- After drafting, the script scans the manuscript for used keys and creates a **References** chapter.
 
-Provide a bibliography as **BibTeX** or **JSON**. The model is instructed to cite only keys you supply (e.g., `[@smith2021]`). The script then scans used keys and appends a **References** chapter.
-
-**BibTeX example**
-
-```bibtex
-@article{smith2021,
-  author  = {Smith, J. and Lee, A.},
-  title   = {Microbiomes in Dairy},
-  journal = {AgriBio},
-  year    = {2021},
-  doi     = {10.1234/abcd},
-  url     = {https://doi.org/10.1234/abcd}
-}
-```
-
-Run with:
-
-```bash
-python ebook_generator.py --idea "Textbook idea" --genre textbook --bibtex sources.bib --outdir ./book_with_refs
-```
-
-**JSON example** (`citations.json`)
-
-```json
-{
-  "doe2019": {
-    "author": "Doe, R.",
-    "year": "2019",
-    "title": "Biofilms 101",
-    "publisher": "SciPress"
-  }
-}
-```
-
-Run with:
-
-```bash
-python ebook_generator.py --idea "Textbook idea" --citations-json citations.json --outdir ./book_with_refs
-```
-
-> If a key is cited but missing in your bibliography, the References chapter marks it as **MISSING** so you can fix it.
+### Add your own sources (optional)
+- Supply `--bibtex sources.bib` and/or `--citations-json citations.json`. These are merged with auto‑fetched items.
+- The final References chapter includes only **actually cited keys**.
 
 ---
 
 ## Outputs
-
 ```
 book_out/
 ├─ plan/               # metadata + plan JSON/MD
 ├─ chapters/           # per‑chapter Markdown drafts
+├─ auto_refs_chXX.bib  # (when --auto-cite) per-chapter Crossref picks
 ├─ book.md             # concatenated manuscript
 ├─ book.epub           # if ebooklib/markdown installed
 ├─ book.docx           # if python-docx + bs4 installed
@@ -152,86 +115,63 @@ book_out/
 ---
 
 ## Tuning length & structure
-
-* **Page count ≈ word count.** 200 pages ≈ 50–60k words; 400 pages ≈ 105–125k words.
-* For tighter books, you can also reduce chapter count and per‑chapter target in `PLAN_PROMPT`:
-
-  * Change “24–36” to “16–22” chapters.
-  * Set chapter `target_words` to **2,500–3,000**.
+- **Page count ≈ word count.** 200 pages ≈ 50–60k words; 400 pages ≈ 105–125k words.
+- For tighter books, reduce chapter count or per‑chapter targets in the generated plan:
+  - 16–22 chapters × 2,500–3,000 words → ~50–60k words (≈200 pages).
+  - 24–36 chapters × 3,000–3,500 words → ~105–125k words (≈400 pages).
 
 ## Reading level presets & examples
+`--reading-level` is free‑form. Common choices:
+- **Elementary**, **Middle school**, **High school (grade 9–12)**
+- **College / Undergraduate**
+- **University (upper‑undergrad & graduate)**
+- **Professional / Technical**
+- **Executive / Policy**
 
-`--reading-level` is free‑form text (no hard‑coded list), so you can write anything (e.g., "grade 9", "university"). Here are practical presets you can use:
-
-* **Elementary** – very simple sentences; everyday vocabulary.
-* **Middle school** – short paragraphs; concrete examples.
-* **High school (grade 9–12)** – general academic tone; light jargon.
-* **Grade 8 / Grade 10** – common fixed points for outreach material.
-* **College / Undergraduate** – more precise terminology; brief citations.
-* **University (upper‑undergrad & graduate)** – formal register; definitions; references.
-* **Professional / Technical** – domain‑specific jargon; standards/specs when needed.
-* **Executive / Policy** – concise, decision‑oriented summaries; minimal technical detail.
-
-**Examples**
-
+Examples:
 ```bash
---reading-level "middle school"
 --reading-level "grade 10"
 --reading-level "college"
 --reading-level "university"
 --reading-level "professional/technical"
 ```
-
-Tip: Pair reading level with `--style` for best control, e.g., `--style "scholarly, rigorous, precise"` for university level.
-
-## Architecture
-
-1. **Metadata** → title, subtitle, audience, voice.
-2. **Plan** → synopsis, parts, chapters (titles, purposes, sections, target words).
-3. **Draft** → chapter‑by‑chapter with continuity hints and structure.
-4. **Assemble** → combine Markdown; optionally build EPUB/DOCX/PDF.
-5. **References** → scan `[@key]` citations and append formatted bibliography (if provided).
+Pair with `--style` (e.g., `--style "scholarly, rigorous, precise"`).
 
 ---
 
 ## CLI reference
-
 Run `python ebook_generator.py -h` for full help. Key options:
-
-* `--idea` (str): single‑sentence core idea.
-* `--genre` (str), `--audience` (str), `--reading-level` (str), `--style` (str).
-* `--min-words` / `--max-words`: total manuscript target.
-* `--backend` (`openai` | `anthropic` | `ollama`) and `--model`.
-* `--outdir` (path), `--resume`.
-* `--bibtex` (path to .bib) and/or `--citations-json` (path to JSON).
-* `--no-exports`: skip EPUB/DOCX/PDF builds (Markdown only).
+- `--idea` (str): single‑sentence core idea.
+- `--genre` (str), `--audience` (str), `--reading-level` (str), `--style` (str).
+- `--min-words` / `--max-words`: total manuscript target.
+- `--backend` (`openai` | `anthropic` | `ollama` | `local`) and `--model`.
+- `--outdir` (path), `--resume`, `--no-exports`.
+- **Citations**: `--auto-cite` (Crossref), `--bibtex` (path to .bib), `--citations-json` (path to JSON).
 
 ---
 
-## Tips & costs
-
-* 110k words is **expensive** on cloud LLMs. Dry‑run at **20k** first, then scale.
-* Local models (Ollama) can save costs, but you may need to iterate prompts/models for quality.
-* Use `--resume` for long runs.
+## Cost & performance tips
+- Start with a **smoke test**: `--min-words 20000 --max-words 30000`.
+- Use **OpenAI** for best coherence; use **Ollama** to iterate cheaply and privately.
+- Always run with `--resume` so retries don’t redo finished chapters.
+- Lower `--temperature` (0.6–0.7) for planning; ~0.7 for drafting for a bit more voice.
 
 ---
 
 ## Troubleshooting
-
-* **`openai`/`anthropic` not installed** → install the chosen backend package.
-* **Missing API key** → set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`.
-* **EPUB/DOCX/PDF not created** → ensure optional deps are installed; otherwise you will always get `book.md`.
-* **BibTeX not parsed** → install `bibtexparser`; check that `@entry{key, ...}` keys match `[@key]` in text.
-* **Very short/long chapters** → adjust `--temperature` (0.6–0.8) or edit `PLAN_PROMPT` targets.
+- **401 / missing API key**: ensure `export OPENAI_API_KEY="sk-..."` (or `ANTHROPIC_API_KEY`).
+- **429 / quota**: add billing or switch to a cheaper model / Ollama; try smaller word targets.
+- **zsh globbing errors**: quote version pins `'openai==1.*'`.
+- **PDF line break issue**: exporter is basic; for print‑ready PDFs, consider Pandoc/LaTeX.
+- **No References chapter**: ensure you used `--auto-cite` (or passed your own `--bibtex/--citations-json`) and that chapters actually contain `[@keys]`.
 
 ---
 
-## Ethics & safety
-
-* The model is instructed to avoid harmful or fabricated content and to **not invent citations**. Review the manuscript for accuracy and attribution, especially for textbooks.
+## Security
+- **Never commit API keys**. Use environment variables or a local secrets manager.
+- Rotate/revoke keys if exposed.
 
 ---
 
 ## License
-
-MIT
+MIT (or your preferred license).

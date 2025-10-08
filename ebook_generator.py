@@ -102,6 +102,67 @@ class OpenAIClient(LLMClient):
 
     @retry(wait=wait_exponential(min=1, max=60), stop=stop_after_attempt(6), reraise=True,
            retry=retry_if_exception_type(Exception))
+    def complete(self, system: str, prompt: str, *, temperature: float = 0.7,
+                 max_tokens: int = 1500, model: str = "") -> str:
+        m = model or self.model
+        base = {
+            "model": m,
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": prompt}],
+        }
+
+        def chat_call(extra):
+            return self.client.chat.completions.create(**{**base, **extra})
+
+        # Try legacy-style params first
+        try:
+            resp = chat_call({"max_tokens": max_tokens, "temperature": temperature})
+            return resp.choices[0].message.content or ""
+        except Exception as e:
+            msg = str(e)
+
+            # Retry if model requires max_completion_tokens instead of max_tokens
+            if "max_completion_tokens" in msg:
+                try:
+                    resp = chat_call({"extra_body": {"max_completion_tokens": max_tokens},
+                                      "temperature": temperature})
+                    return resp.choices[0].message.content or ""
+                except Exception as e2:
+                    msg = str(e2)
+
+            # Retry if model disallows temperature (only default supported)
+            if "temperature" in msg and "unsupported" in msg.lower():
+                try:
+                    # omit temperature entirely
+                    resp = chat_call({"max_tokens": max_tokens})
+                    return resp.choices[0].message.content or ""
+                except Exception as e3:
+                    msg = str(e3)
+
+            # Final fallback: Responses API (max_output_tokens)
+            try:
+                resp2 = self.client.responses.create(
+                    model=m,
+                    input=[{"role": "system", "content": system},
+                           {"role": "user", "content": prompt}],
+                    max_output_tokens=max_tokens,
+                    # omit temperature to satisfy strict models
+                )
+                return getattr(resp2, "output_text", None) or ""
+            except Exception:
+                pass
+
+            raise LLMError(msg)
+
+
+    def __init__(self, model: str):
+        if openai is None:
+            raise RuntimeError("openai package not installed. Run: pip install openai==1.*")
+        self.model = model
+        self.client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+    @retry(wait=wait_exponential(min=1, max=60), stop=stop_after_attempt(6), reraise=True,
+           retry=retry_if_exception_type(Exception))
     def complete(self, system: str, prompt: str, *, temperature: float = 0.7, max_tokens: int = 1500, model: str = "") -> str:
         m = model or self.model
         base = {

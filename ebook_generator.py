@@ -1,111 +1,65 @@
 #!/usr/bin/env python3
 """
-AI e‑Book Generator (≈400 pages)
---------------------------------
+AI e-Book Generator (Self-Citing Edition)
+----------------------------------------
+- Outline-first planning → chapter drafting → assembly to Markdown (+ optional EPUB/DOCX/PDF)
+- **Self-cite mode**: per-chapter literature search (Crossref), strict in-text citations [@key],
+  auto-compiled References chapter using only fetched/known keys (prevents hallucinated refs).
+- Works with OpenAI, Anthropic, or local Ollama models.
 
-Given a single BOOK_IDEA string, this program plans, drafts, and compiles a full-length
-non‑fiction or fiction e‑book (~100k–120k words, ~350–450 pages at 250–300 wpp).
+Quick start (OpenAI example):
+    python -m pip install 'pydantic==2.*' 'rich==13.*' 'tqdm==4.*' 'tenacity==8.*' 'python-dateutil==2.*' 'requests==2.*'
+    python -m pip install 'openai==1.*'  # or anthropic==0.*; Ollama needs no extra package
+    # optional outputs
+    python -m pip install 'ebooklib==0.*' 'markdown==3.*' 'python-docx==1.*' 'reportlab==4.*' 'beautifulsoup4==4.*'
+    # optional: user-provided BibTeX
+    python -m pip install 'bibtexparser==1.*'
 
-Highlights
-- Outline-first workflow: metadata → synopsis → parts → chapters → sections → scenes.
-- Resumable + checkpointed generation (JSONL). Safe to stop/restart any time.
-- Pluggable LLM backends (OpenAI, Anthropic, or Ollama/local) via a common interface.
-- Style controls (tone, audience, reading level). Content policy guardrails.
-- Structured prompts enforce cohesion and continuity across chapters.
-- Emits Markdown sources, plus optional EPUB/PDF/DOCX if toolchain available.
-
-Quick start
------------
-1) Install deps (choose your backend):
-   # Core
-   pip install pydantic==2.* rich==13.* tqdm==4.* tenacity==8.* python-dateutil==2.*
-   
-   # At least one backend (uncomment one):
-   pip install openai==1.*
-   # pip install anthropic==0.*
-   # For local models via Ollama's HTTP API, no extra pip needed (uses 'requests').
-   pip install requests==2.*
-
-   # Optional outputs
-   pip install ebooklib==0.* markdown==3.* python-docx==1.* reportlab==4.*
-   # (Or ensure 'pandoc' is installed for high‑quality EPUB/PDF conversion.)
-
-2) Export credentials for your chosen backend (one of):
-   export OPENAI_API_KEY=...
-   export ANTHROPIC_API_KEY=...
-   # or run an Ollama server locally (http://localhost:11434) with a model pulled
-   # e.g., `ollama pull llama3.1`.
-
-3) Run:
-   python ebook_generator.py \
-     --idea "A microbiologist uses AI to decode the hidden ecology of dairy farm microbes" \
-     --genre "popular science" \
-     --audience "curious adults" \
-     --reading-level "grade 10" \
-     --style "engaging, clear, lightly humorous" \
-     --min-words 105000 --max-words 125000 \
-     --backend openai --model gpt-4.1 \
-     --outdir ./book_out
-
-   You can resume safely:
-   python ebook_generator.py --resume --outdir ./book_out
-
-Outputs
--------
-- book_out/
-  ├─ plan/               # JSON & MD planning artifacts
-  ├─ chapters/           # Per‑chapter Markdown drafts
-  ├─ book.md             # Single concatenated Markdown manuscript
-  ├─ book.epub           # If ebooklib or pandoc available
-  ├─ book.pdf            # If reportlab or pandoc available
-  └─ checkpoints.jsonl   # Resumable generation log
-
-Notes
------
-- 400 pages is a *lot* of text. This program generates in small, controlled chunks
-  with continuity prompts. Expect long runtimes and API costs for cloud LLMs. For a
-  cheaper test, try --min-words 20_000 first.
-- Prompts include safety and factuality guidance but you are responsible for final edits.
-
+    export OPENAI_API_KEY="sk-..."   # if using OpenAI
+    python ebook_generator.py \
+      --idea "A microbiologist uses AI to decode the hidden ecology of dairy farm microbes" \
+      --genre "textbook" \
+      --audience "upper-undergrad and graduate students" \
+      --reading-level "university" \
+      --style "scholarly, rigorous, precise" \
+      --min-words 50000 --max-words 60000 \
+      --backend openai --model gpt-5-thinking \
+      --auto-cite \
+      --outdir ./book_out
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
-import random
 import re
-import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from pydantic import BaseModel, Field
 from rich.console import Console
-from rich.table import Table
-from rich.progress import Progress
 from tqdm import tqdm
 
-# Optional imports guarded at runtime
+# ----- Optional imports guarded at runtime -----
 try:
     import openai  # type: ignore
-except Exception:  # pragma: no cover
+except Exception:
     openai = None
 
 try:
     import anthropic  # type: ignore
-except Exception:  # pragma: no cover
+except Exception:
     anthropic = None
 
 try:
-    import requests  # for Ollama or custom HTTP LLMs
-except Exception:  # pragma: no cover
+    import requests  # HTTP (Ollama + Crossref queries)
+except Exception:
     requests = None
 
-# Optional for outputs
 try:
     from ebooklib import epub  # type: ignore
 except Exception:
@@ -117,17 +71,21 @@ except Exception:
     markdown = None
 
 try:
-    import docx  # python-docx
+    import docx  # type: ignore
     from docx import Document  # type: ignore
 except Exception:
     Document = None
 
+try:
+    import bibtexparser  # type: ignore
+except Exception:
+    bibtexparser = None
+
 console = Console()
 
-# -----------------------------
-# LLM Backend Abstraction
-# -----------------------------
-
+# =========================
+# LLM Backends
+# =========================
 class LLMError(Exception):
     pass
 
@@ -138,9 +96,8 @@ class LLMClient:
 class OpenAIClient(LLMClient):
     def __init__(self, model: str):
         if openai is None:
-            raise RuntimeError("openai package not installed. pip install openai")
+            raise RuntimeError("openai package not installed. Run: pip install openai==1.*")
         self.model = model
-        # Using new OpenAI client style
         self.client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
     @retry(wait=wait_exponential(min=1, max=60), stop=stop_after_attempt(6), reraise=True,
@@ -150,10 +107,7 @@ class OpenAIClient(LLMClient):
         try:
             resp = self.client.chat.completions.create(
                 model=m,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt},
-                ],
+                messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
@@ -164,7 +118,7 @@ class OpenAIClient(LLMClient):
 class AnthropicClient(LLMClient):
     def __init__(self, model: str):
         if anthropic is None:
-            raise RuntimeError("anthropic package not installed. pip install anthropic")
+            raise RuntimeError("anthropic package not installed. Run: pip install anthropic==0.*")
         self.model = model
         self.client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
@@ -180,7 +134,6 @@ class AnthropicClient(LLMClient):
                 system=system,
                 messages=[{"role": "user", "content": prompt}],
             )
-            # anthropic SDK returns a list of content blocks
             parts = []
             for block in msg.content:
                 if getattr(block, "type", "") == "text":
@@ -192,16 +145,15 @@ class AnthropicClient(LLMClient):
 class OllamaClient(LLMClient):
     def __init__(self, model: str, host: str = "http://localhost:11434"):
         if requests is None:
-            raise RuntimeError("requests not installed. pip install requests")
+            raise RuntimeError("requests not installed. Run: pip install requests==2.*")
         self.model = model
-        self.host = host.rstrip('/')
+        self.host = host.rstrip("/")
 
     @retry(wait=wait_exponential(min=1, max=30), stop=stop_after_attempt(6), reraise=True,
            retry=retry_if_exception_type(Exception))
     def complete(self, system: str, prompt: str, *, temperature: float = 0.7, max_tokens: int = 1500, model: str = "") -> str:
         m = model or self.model
         try:
-            # Simple non‑stream call
             payload = {
                 "model": m,
                 "options": {"temperature": temperature, "num_predict": max_tokens},
@@ -211,17 +163,16 @@ class OllamaClient(LLMClient):
                 ],
                 "stream": False,
             }
-            r = requests.post(f"{self.host}/api/chat", json=payload, timeout=120)
+            r = requests.post(f"{self.host}/api/chat", json=payload, timeout=180)
             r.raise_for_status()
             data = r.json()
             return data.get("message", {}).get("content", "")
         except Exception as e:
             raise LLMError(str(e))
 
-# -----------------------------
+# =========================
 # Data Models
-# -----------------------------
-
+# =========================
 class BookMeta(BaseModel):
     title: str
     subtitle: str
@@ -250,14 +201,12 @@ class BookPlan(BaseModel):
     chapters: List[ChapterPlan]
     total_target_words: int
 
-# -----------------------------
-# Prompt Templates
-# -----------------------------
-
+# =========================
+# Prompts
+# =========================
 SYSTEM_POLICY = (
-    "You are a seasoned book author and editor. Write original, coherent, factual, and well‑structured prose. "
-    "Avoid harmful, illegal, or hateful content. Do not fabricate real citations or misrepresent facts. If the user idea requires facts, "
-    "present them responsibly and add plain‑language context. Maintain consistency in names, terminology, and narrative voice."
+    "You are a seasoned book author and editor. Write original, coherent, factual prose. "
+    "Avoid harmful or hateful content. Do not fabricate real citations. Maintain consistency."
 )
 
 META_PROMPT = """
@@ -272,13 +221,13 @@ Style notes: {style}
 """.strip()
 
 PLAN_PROMPT = """
-You are designing a complete long‑form book based on the metadata and idea below.
+Design a complete long-form book based on the metadata and idea below.
 Produce:
 1) A 2–3 paragraph synopsis.
-2) A list of up to 4 PART labels (optional for non‑fiction).
-3) A detailed chapter plan with 24–36 chapters. Each chapter must include:
+2) A list of up to 4 PART labels (optional for non-fiction).
+3) A detailed chapter plan with 16–22 chapters. Each chapter must include:
    - number (int), title, purpose (1–2 sentences), key_points (4–8 bullets),
-   - target_words (3000–4000 words),
+   - target_words (2500–3000 words),
    - 4–8 sections with title + 1–2 sentence summary each.
 Aim total target words between {min_words} and {max_words}.
 Return JSON with keys: synopsis, parts, chapters[], total_target_words.
@@ -297,49 +246,118 @@ Include:
 - Figures/tables placeholders in Markdown when helpful (e.g., *[Figure: ...]*), but do not invent data.
 - End with 3–5 reflective questions or key takeaways as a bulleted list.
 
-Constraints:
-- Preserve terminology continuity with previous chapters (names, terms, acronyms).
-- Avoid repetition and filler; prefer concrete examples and explanations.
-- For claims of fact, write cautiously and avoid specific statistics unless widely accepted or necessary.
+Citations (when writing a textbook):
+- Cite only sources that are present in the provided bibliography list below, using the Markdown form `[@key]`.
+- If no appropriate source exists in the bibliography, write without a citation rather than fabricating one.
 
 Book metadata: {meta_json}
 Book synopsis: {synopsis}
 Chapter plan JSON: {chapter_json}
 
+Available bibliography keys (title → key):
+{bib_keys}
+
 Previously drafted chapter titles:
 {prev_titles}
 """.strip()
 
-# -----------------------------
+# =========================
+# Auto-citation (Crossref)
+# =========================
+CROSSREF_API = "https://api.crossref.org/works"
+
+@dataclass
+class Ref:
+    key: str
+    title: str
+    authors: str
+    year: str
+    venue: str
+    doi: str = ""
+    url: str = ""
+
+    def to_bibtex(self) -> str:
+        fields = {"title": self.title, "author": self.authors, "year": self.year}
+        if self.venue: fields["journal"] = self.venue
+        if self.doi: fields["doi"] = self.doi
+        if self.url: fields["url"] = self.url
+        esc = lambda x: x.replace("&", "\\&")
+        body = ",\n  ".join(f"{k} = {{{esc(v)}}}" for k, v in fields.items() if v)
+        return f"@article{{{self.key},\n  {body}\n}}\n"
+
+def _http_get(url: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    if requests is None:
+        raise RuntimeError("requests not installed (needed for auto-cite).")
+    headers = {"User-Agent": os.getenv("AUTOCITE_USER_AGENT", "AutoCite/1.0 (mailto:example@example.com)")}
+    r = requests.get(url, params=params, headers=headers, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+def search_crossref(query: str, rows: int = 5, min_year: int = 2000) -> List[Ref]:
+    data = _http_get(CROSSREF_API, {
+        "query": query,
+        "rows": rows,
+        "sort": "is-referenced-by-count",
+        "order": "desc",
+        "filter": f"type:journal-article,from-pub-date:{min_year}-01-01",
+    })
+    items = data.get("message", {}).get("items", [])
+    out: List[Ref] = []
+    for it in items:
+        title = (it.get("title") or [""])[0]
+        year = str((it.get("issued", {}).get("date-parts", [[""]])[0] or [""])[0])
+        doi = it.get("DOI", "")
+        url = it.get("URL", "")
+        authors_list = it.get("author", []) or []
+        names = []
+        for a in authors_list[:8]:
+            last = a.get("family") or a.get("name") or ""
+            first = a.get("given", "")
+            names.append(f"{last}, {first}".strip(", "))
+        authors = " and ".join(names)
+        venue = (it.get("container-title") or [""])[0]
+        base = re.sub(r"\W+", "", (authors_list[0].get("family") if authors_list else (title.split()[0] if title else "ref")).lower())
+        yr = re.sub(r"\D", "", year)[:4] or "0000"
+        first_word = re.sub(r"\W+", "", (title.split()[0] if title else "paper").lower())[:10]
+        key = f"{base}{yr}_{first_word}"[:40]
+        out.append(Ref(key=key, title=title, authors=authors, year=yr, venue=venue, doi=doi, url=url))
+    return out
+
+def collect_refs_for_chapter(chapter_title: str, key_points: List[str], per_topic: int = 3, budget: int = 12) -> List[Ref]:
+    bag: List[Ref] = []
+    seen = set()
+    topics = [chapter_title] + list(key_points or [])
+    for t in topics:
+        refs = search_crossref(t, rows=per_topic)
+        for r in refs:
+            dup_key = r.doi or r.key
+            if dup_key in seen:
+                continue
+            seen.add(dup_key)
+            bag.append(r)
+            if len(bag) >= budget:
+                return bag
+        time.sleep(0.3)  # polite pacing
+    return bag
+
+# =========================
 # Orchestration
-# -----------------------------
-
-def estimate_chapter_count(total_words: int, per_chapter: int = 3500) -> int:
-    return max(16, min(40, round(total_words / per_chapter)))
-
-
-def sanitize_filename(name: str) -> str:
-    s = re.sub(r"[^A-Za-z0-9\- _]+", "", name).strip().replace(" ", "_")
-    return s[:120] if s else "chapter"
-
-
+# =========================
 class Checkpointer:
     def __init__(self, path: Path):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():
             self.path.write_text("")
-
     def log(self, event: Dict[str, Any]):
         event["ts"] = datetime.utcnow().isoformat()
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
-
 class BookBuilder:
     def __init__(self, llm: LLMClient, outdir: Path, idea: str, genre: str, audience: str,
                  reading_level: str, style: str, min_words: int, max_words: int, resume: bool = False,
-                 temperature: float = 0.7, model: str = ""):
+                 temperature: float = 0.7, model: str = "", bibliography: Optional[Dict[str, Dict[str, Any]]] = None):
         self.llm = llm
         self.outdir = outdir
         self.plan_dir = outdir / "plan"
@@ -356,11 +374,11 @@ class BookBuilder:
         self.checkpoint = Checkpointer(outdir / "checkpoints.jsonl")
         self.plan_dir.mkdir(parents=True, exist_ok=True)
         self.chapters_dir.mkdir(parents=True, exist_ok=True)
-
         # State
         self.meta: Optional[BookMeta] = None
         self.plan: Optional[BookPlan] = None
-
+        self.bibliography: Dict[str, Dict[str, Any]] = bibliography or {}
+        self.auto_cite: bool = False
         if resume:
             self._try_load_state()
 
@@ -373,10 +391,7 @@ class BookBuilder:
             self.plan = BookPlan.model_validate_json(plan_path.read_text(encoding="utf-8"))
 
     def _save_json(self, path: Path, data: BaseModel | Dict[str, Any]):
-        if isinstance(data, BaseModel):
-            text = data.model_dump_json(indent=2, ensure_ascii=False)
-        else:
-            text = json.dumps(data, indent=2, ensure_ascii=False)
+        text = data.model_dump_json(indent=2, ensure_ascii=False) if isinstance(data, BaseModel) else json.dumps(data, indent=2, ensure_ascii=False)
         path.write_text(text, encoding="utf-8")
 
     # ----- Steps -----
@@ -388,11 +403,9 @@ class BookBuilder:
             reading_level=self.reading_level, style=self.style
         )
         text = self.llm.complete(SYSTEM_POLICY, prompt, temperature=self.temperature, max_tokens=1200, model=self.model)
-        # Try parse JSON
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
-            # heuristic extraction (very basic)
             data = {
                 "title": "Untitled Book",
                 "subtitle": "A Project Generated by AI",
@@ -423,17 +436,33 @@ class BookBuilder:
             data = json.loads(text)
         except json.JSONDecodeError:
             raise RuntimeError("Failed to parse plan JSON from the model. Inspect plan/ folder.")
-        plan = BookPlan(**data)
-        # Persist
-        self.plan = plan
-        self._save_json(self.plan_dir / "plan.json", plan)
-        (self.plan_dir / "synopsis.md").write_text(plan.synopsis, encoding="utf-8")
-        self.checkpoint.log({"stage": "plan", "total_target_words": plan.total_target_words})
-        return plan
+        self.plan = BookPlan(**data)
+        self._save_json(self.plan_dir / "plan.json", self.plan)
+        (self.plan_dir / "synopsis.md").write_text(self.plan.synopsis, encoding="utf-8")
+        self.checkpoint.log({"stage": "plan", "total_target_words": self.plan.total_target_words})
+        return self.plan
 
     def draft_chapter(self, ch: ChapterPlan, prev_titles: List[str]) -> str:
         meta = self.generate_meta()
         plan = self.generate_plan()
+
+        # Auto-cite: fetch references per chapter and merge into bibliography
+        if self.auto_cite:
+            refs = collect_refs_for_chapter(ch.title, ch.key_points, per_topic=3, budget=12)
+            for r in refs:
+                self.bibliography[r.key] = {
+                    "title": r.title, "author": r.authors, "year": r.year,
+                    "journal": r.venue, "doi": r.doi, "url": r.url,
+                }
+            # Optional: write per-chapter bib for inspection
+            (self.plan_dir / f"auto_refs_ch{ch.number:02d}.bib").write_text(
+                "".join(r.to_bibtex() for r in refs), encoding="utf-8"
+            )
+
+        bib_keys = "\n".join(
+            f"- {v.get('title','(untitled)')} → {k}" for k, v in self.bibliography.items()
+        ) or "(none provided)"
+
         prompt = CHAPTER_DRAFT_PROMPT.format(
             ch_num=ch.number,
             ch_title=ch.title,
@@ -442,9 +471,9 @@ class BookBuilder:
             synopsis=plan.synopsis,
             chapter_json=ch.model_dump_json(indent=2, ensure_ascii=False),
             prev_titles="\n".join(f"- {t}" for t in prev_titles) if prev_titles else "(none)",
+            bib_keys=bib_keys,
         )
-        text = self.llm.complete(SYSTEM_POLICY, prompt, temperature=self.temperature, max_tokens=5000, model=self.model)
-        return text
+        return self.llm.complete(SYSTEM_POLICY, prompt, temperature=self.temperature, max_tokens=5000, model=self.model)
 
     def run(self):
         meta = self.generate_meta()
@@ -454,7 +483,7 @@ class BookBuilder:
         prev_titles: List[str] = []
 
         for ch in tqdm(plan.chapters, desc="Drafting chapters"):
-            ch_name = f"{ch.number:02d}_{sanitize_filename(ch.title)}.md"
+            ch_name = f"{ch.number:02d}_{self._sanitize_filename(ch.title)}.md"
             ch_path = self.chapters_dir / ch_name
             if ch_path.exists() and ch_path.stat().st_size > 200:
                 prev_titles.append(ch.title)
@@ -468,7 +497,6 @@ class BookBuilder:
             prev_titles.append(ch.title)
             chapter_files.append(ch_path)
 
-        # Assemble book
         book_md = self._assemble_book_md(meta, plan, chapter_files)
         (self.outdir / "book.md").write_text(book_md, encoding="utf-8")
         self.checkpoint.log({"stage": "assemble", "path": str(self.outdir / "book.md")})
@@ -489,6 +517,12 @@ class BookBuilder:
 
         console.print("\n[bold green]Done![/] Manuscript ready at:", self.outdir / "book.md")
 
+    # ----- Helpers -----
+    @staticmethod
+    def _sanitize_filename(name: str) -> str:
+        s = re.sub(r"[^A-Za-z0-9\- _]+", "", name).strip().replace(" ", "_")
+        return s[:120] if s else "chapter"
+
     def _assemble_book_md(self, meta: BookMeta, plan: BookPlan, chapter_files: List[Path]) -> str:
         front = [
             f"# {meta.title}",
@@ -505,7 +539,42 @@ class BookBuilder:
         front.append("\n---\n")
 
         parts = [p.read_text(encoding="utf-8") for p in chapter_files]
-        return "\n\n".join(front + parts) + "\n"
+        manuscript = "\n\n".join(front + parts) + "\n"
+
+        # Append References chapter (only cited keys)
+        if self.bibliography:
+            cited = self._extract_citekeys(manuscript)
+            bib_md = self._format_bibliography(cited)
+            manuscript += "\n\n---\n\n# References\n\n" + bib_md + "\n"
+        return manuscript
+
+    def _extract_citekeys(self, text: str) -> List[str]:
+        keys = set(re.findall(r"\[@([^\]]+)\]", text))
+        expanded = set()
+        for k in keys:
+            for part in re.split(r"[;,]\s*", k):
+                if part:
+                    expanded.add(part.strip(" @"))
+        return sorted(expanded)
+
+    def _format_bibliography(self, keys: List[str]) -> str:
+        lines = []
+        for k in keys:
+            entry = self.bibliography.get(k)
+            if not entry:
+                lines.append(f"- **MISSING** citation for key `{k}` — please supply in bibliography.")
+                continue
+            authors = entry.get("author") or entry.get("authors") or ""
+            year = entry.get("year") or entry.get("date", "")[0:4]
+            title = entry.get("title", "Untitled")
+            journal = entry.get("journal") or entry.get("booktitle") or entry.get("publisher") or ""
+            doi = entry.get("doi", "")
+            url = entry.get("url", "")
+            tail = f" {journal}" if journal else ""
+            tail += f". DOI: {doi}" if doi else ""
+            tail += f". {url}" if url else ""
+            lines.append(f"- {authors} ({year}). *{title}*.{tail}")
+        return "\n".join(lines)
 
     # ----- Exports -----
     def _export_epub(self, meta: BookMeta, book_md: str):
@@ -516,8 +585,6 @@ class BookBuilder:
         bk.set_title(meta.title)
         bk.set_language("en")
         bk.add_author(meta.author)
-
-        # Split markdown into chapters by H1 markers (simple heuristic)
         chunks = re.split(r"\n(?=# )", book_md)
         spine = []
         toc = []
@@ -527,13 +594,10 @@ class BookBuilder:
             bk.add_item(c)
             spine.append(c)
             toc.append(c)
-
-        # required items
         bk.toc = tuple(toc)
-        bk.spine = ['nav'] + spine
+        bk.spine = ["nav"] + spine
         bk.add_item(epub.EpubNcx())
         bk.add_item(epub.EpubNav())
-
         out = self.outdir / "book.epub"
         epub.write_epub(str(out), bk)
         console.print(f"[green]EPUB written:[/] {out}")
@@ -541,13 +605,11 @@ class BookBuilder:
     def _export_docx(self, book_md: str):
         if Document is None:
             raise RuntimeError("python-docx not installed")
-        from markdown import markdown as md_to_html  # requires markdown package
-        from bs4 import BeautifulSoup  # optional but nice to have
+        from markdown import markdown as md_to_html
         try:
-            from bs4 import BeautifulSoup
+            from bs4 import BeautifulSoup  # type: ignore
         except Exception:
             raise RuntimeError("BeautifulSoup4 required for docx export: pip install beautifulsoup4")
-
         html = md_to_html(book_md)
         soup = BeautifulSoup(html, "html.parser")
         doc = Document()
@@ -565,25 +627,23 @@ class BookBuilder:
                 for li in node.find_all("li", recursive=False):
                     doc.add_paragraph(li.get_text(), style="List Bullet")
             else:
-                doc.add_paragraph(txt)
+                if txt.strip():
+                    doc.add_paragraph(txt)
         out = self.outdir / "book.docx"
         doc.save(str(out))
         console.print(f"[green]DOCX written:[/] {out}")
 
     def _export_pdf(self, book_md: str):
-        # Lightweight fallback PDF using reportlab (no images / basic formatting)
         try:
             from reportlab.lib.pagesizes import LETTER
             from reportlab.pdfgen import canvas as pdf_canvas
             from reportlab.lib.units import inch
         except Exception:
-            raise RuntimeError("reportlab not installed; for better PDFs, install pandoc")
-
+            raise RuntimeError("reportlab not installed; for better PDFs, use pandoc or LaTeX")
         out_path = self.outdir / "book.pdf"
         c = pdf_canvas.Canvas(str(out_path), pagesize=LETTER)
         width, height = LETTER
         margin = 0.75 * inch
-        max_width = width - 2 * margin
         y = height - margin
         for line in book_md.splitlines():
             if not line.strip():
@@ -591,7 +651,6 @@ class BookBuilder:
                 if y < margin:
                     c.showPage(); y = height - margin
                 continue
-            # naive wrap
             words = line.split(" ")
             cur = ""
             for w in words:
@@ -612,10 +671,9 @@ class BookBuilder:
         c.showPage(); c.save()
         console.print(f"[green]PDF written:[/] {out_path}")
 
-# -----------------------------
+# =========================
 # CLI
-# -----------------------------
-
+# =========================
 def build_llm(backend: str, model: str) -> LLMClient:
     backend = backend.lower()
     if backend == "openai":
@@ -626,12 +684,11 @@ def build_llm(backend: str, model: str) -> LLMClient:
         return OllamaClient(model=model)
     raise ValueError(f"Unsupported backend: {backend}")
 
-
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Generate a full e‑book from a single idea using an LLM.")
+    p = argparse.ArgumentParser(description="Generate a full e-book from a single idea using an LLM.")
     p.add_argument("--idea", type=str, required=False, default="An untitled book idea",
-                   help="Single‑sentence core idea for the book.")
-    p.add_argument("--genre", type=str, default="non‑fiction")
+                   help="Single-sentence core idea for the book.")
+    p.add_argument("--genre", type=str, default="non-fiction")
     p.add_argument("--audience", type=str, default="general audience")
     p.add_argument("--reading-level", type=str, default="grade 10")
     p.add_argument("--style", type=str, default="clear, engaging, practical")
@@ -643,14 +700,41 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--outdir", type=Path, default=Path("./book_out"))
     p.add_argument("--resume", action="store_true", help="Resume from existing plan/chapters if present.")
     p.add_argument("--no-exports", action="store_true", help="Skip EPUB/DOCX/PDF exports; keep Markdown only.")
+    # Bibliography / auto-cite
+    p.add_argument("--bibtex", type=Path, default=None, help="Optional path to a .bib file of sources.")
+    p.add_argument("--citations-json", type=Path, default=None, help="Optional path to citations JSON (list or {key: entry}).")
+    p.add_argument("--auto-cite", action="store_true", help="Auto-search literature per chapter (Crossref).")
     return p.parse_args(argv)
-
 
 def main(argv: Optional[List[str]] = None):
     args = parse_args(argv)
     args.outdir.mkdir(parents=True, exist_ok=True)
 
     llm = build_llm(args.backend, args.model)
+
+    # Load user-provided bibliography (optional)
+    bibliography: Dict[str, Dict[str, Any]] = {}
+    if args.bibtex and args.bibtex.exists():
+        if bibtexparser is None:
+            console.print("[yellow]BibTeX provided but bibtexparser not installed. Skipping.")
+        else:
+            with open(args.bibtex, "r", encoding="utf-8") as bf:
+                db = bibtexparser.load(bf)
+            for entry in db.entries:
+                key = entry.get("ID") or entry.get("key") or entry.get("citation_key")
+                if key:
+                    bibliography[key] = entry
+    if args.citations_json and args.citations_json.exists():
+        try:
+            cj = json.loads(args.citations_json.read_text(encoding="utf-8"))
+            if isinstance(cj, list):
+                for i, e in enumerate(cj, 1):
+                    key = e.get("key") or e.get("id") or f"ref{i:04d}"
+                    bibliography[key] = e
+            elif isinstance(cj, dict):
+                bibliography.update({str(k): v for k, v in cj.items()})
+        except Exception as e:
+            console.print(f"[yellow]Failed to read citations JSON: {e}")
 
     builder = BookBuilder(
         llm=llm,
@@ -665,7 +749,9 @@ def main(argv: Optional[List[str]] = None):
         resume=args.resume,
         temperature=args.temperature,
         model=args.model,
+        bibliography=bibliography,
     )
+    builder.auto_cite = args.auto_cite
 
     builder.run()
 

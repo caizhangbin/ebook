@@ -104,16 +104,41 @@ class OpenAIClient(LLMClient):
            retry=retry_if_exception_type(Exception))
     def complete(self, system: str, prompt: str, *, temperature: float = 0.7, max_tokens: int = 1500, model: str = "") -> str:
         m = model or self.model
+        base = {
+            "model": m,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+            "temperature": temperature,
+        }
         try:
-            resp = self.client.chat.completions.create(
-                model=m,
-                messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
+            # First try legacy-style param (works on many chat models)
+            resp = self.client.chat.completions.create(**base, max_tokens=max_tokens)
             return resp.choices[0].message.content or ""
         except Exception as e:
-            raise LLMError(str(e))
+            msg = str(e)
+            # Some newer models require max_completion_tokens instead of max_tokens
+            if "max_tokens" in msg and "max_completion_tokens" in msg:
+                resp = self.client.chat.completions.create(
+                    **base,
+                    extra_body={"max_completion_tokens": max_tokens},
+                )
+                return resp.choices[0].message.content or ""
+            # (Optional) final fallback: Responses API with max_output_tokens
+            try:
+                resp2 = self.client.responses.create(
+                    model=m,
+                    input=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=temperature,
+                    max_output_tokens=max_tokens,
+                )
+                # openai==1.* returns a convenience helper:
+                return getattr(resp2, "output_text", None) or ""
+            except Exception:
+                pass
+            raise LLMError(msg)
+
 
 class AnthropicClient(LLMClient):
     def __init__(self, model: str):

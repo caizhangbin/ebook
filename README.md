@@ -73,13 +73,14 @@ python ebook_generator.py \
 **200‑page target (~50–60k words)**
 
 ```bash
+export OPENAI_API_KEY=sk-...   # make sure this is set
 python ebook_generator.py \
   --idea "Your idea here" \
+  --backend openai --model gpt-5-thinking \
   --min-words 50000 --max-words 60000 \
-  --genre "textbook" --audience "upper-undergrad/grad" \
-  --style "scholarly, clear" \
-  --backend openai --model gpt-4.1 \
+  --temperature 0.7 \
   --outdir ./book_out_200p
+
 ```
 
 **Resume a run** (safe to interrupt and continue later):

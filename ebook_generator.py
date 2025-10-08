@@ -610,8 +610,7 @@ class BookBuilder:
                 if y < margin:
                     c.showPage(); y = height - margin
         c.showPage(); c.save()
-        console.print(f"[green]PDF written:[/] {out_path}
-")
+        console.print(f"[green]PDF written:[/] {out_path}")
 
 # -----------------------------
 # CLI

@@ -82,6 +82,53 @@ except Exception:
     bibtexparser = None
 
 console = Console()
+# =========================
+
+def _extract_json_block(text: str) -> str:
+    # Try fenced JSON first
+    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S | re.I)
+    if m:
+        return m.group(1)
+    # Fallback: first { ... last }
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return text[start:end+1]
+    raise ValueError("No JSON object found")
+
+def _parse_or_repair_json(raw: str, schema_hint: str = "") -> dict:
+    # 1) direct
+    try:
+        return json.loads(raw)
+    except Exception:
+        pass
+    # 2) extract block
+    try:
+        return json.loads(_extract_json_block(raw))
+    except Exception:
+        pass
+    # 3) ask the model to repair (uses your existing LLM client via a simple call)
+    repair_prompt = (
+        "Repair the following to valid strict JSON only. "
+        "Do not include any text outside the JSON. "
+        + (f"Schema hint: {schema_hint}\n" if schema_hint else "")
+        + "Here is the text:\n<<<\n" + raw + "\n>>>"
+    )
+    # Use default temperature and your current model
+    fixed = OpenAI_FIX_FALLBACK(repair_prompt)  # we'll define this next
+    return json.loads(_extract_json_block(fixed))
+
+
+def OpenAI_FIX_FALLBACK(prompt: str) -> str:
+    # Lightweight, tolerant call using Responses API (avoids max_tokens/temperature quirks)
+    from openai import OpenAI
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    resp = client.responses.create(
+        model="gpt-5",  # or your current default
+        input=prompt,
+        max_output_tokens=1200,
+    )
+    return getattr(resp, "output_text", None) or ""
 
 # =========================
 # LLM Backends
@@ -94,6 +141,66 @@ class LLMClient:
         raise NotImplementedError
 
 class OpenAIClient(LLMClient):
+    def __init__(self, model: str):
+        if openai is None:
+            raise RuntimeError("openai package not installed. Run: pip install openai==1.*")
+        self.model = model
+        self.client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+    @retry(wait=wait_exponential(min=1, max=60), stop=stop_after_attempt(6), reraise=True,
+           retry=retry_if_exception_type(Exception))
+    def complete(self, system: str, prompt: str, *, temperature: float = 0.7,
+                 max_tokens: int = 1500, model: str = "") -> str:
+        m = model or self.model
+        base = {
+            "model": m,
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": prompt}],
+        }
+
+        def chat_call(extra):
+            return self.client.chat.completions.create(**{**base, **extra})
+
+        # Try legacy-style params first
+        try:
+            resp = chat_call({"max_tokens": max_tokens, "temperature": temperature})
+            return resp.choices[0].message.content or ""
+        except Exception as e:
+            msg = str(e)
+
+            # Retry if model requires max_completion_tokens instead of max_tokens
+            if "max_completion_tokens" in msg:
+                try:
+                    resp = chat_call({"extra_body": {"max_completion_tokens": max_tokens},
+                                      "temperature": temperature})
+                    return resp.choices[0].message.content or ""
+                except Exception as e2:
+                    msg = str(e2)
+
+            # Retry if model disallows temperature (only default supported)
+            if "temperature" in msg and "unsupported" in msg.lower():
+                try:
+                    # omit temperature entirely
+                    resp = chat_call({"max_tokens": max_tokens})
+                    return resp.choices[0].message.content or ""
+                except Exception as e3:
+                    msg = str(e3)
+
+            # Final fallback: Responses API (max_output_tokens)
+            try:
+                resp2 = self.client.responses.create(
+                    model=m,
+                    input=[{"role": "system", "content": system},
+                           {"role": "user", "content": prompt}],
+                    max_output_tokens=max_tokens,
+                    # omit temperature to satisfy strict models
+                )
+                return getattr(resp2, "output_text", None) or ""
+            except Exception:
+                pass
+
+            raise LLMError(msg)
+
     def __init__(self, model: str):
         if openai is None:
             raise RuntimeError("openai package not installed. Run: pip install openai==1.*")
@@ -298,6 +405,7 @@ SYSTEM_POLICY = (
 META_PROMPT = """
 Given the book idea below, propose professional metadata and a strong market hook.
 Return JSON with keys: title, subtitle, author, genre, audience, reading_level, style, promise.
+Return ONLY valid JSON. No prose outside the JSON.
 
 Book idea: {idea}
 Preferred genre: {genre}
@@ -477,8 +585,12 @@ class BookBuilder:
             self.plan = BookPlan.model_validate_json(plan_path.read_text(encoding="utf-8"))
 
     def _save_json(self, path: Path, data: BaseModel | Dict[str, Any]):
-        text = data.model_dump_json(indent=2, ensure_ascii=False) if isinstance(data, BaseModel) else json.dumps(data, indent=2, ensure_ascii=False)
-        path.write_text(text, encoding="utf-8")
+        #text = data.model_dump_json(indent=2, ensure_ascii=False) if isinstance(data, BaseModel) else json.dumps(data, indent=2, ensure_ascii=False)
+        if isinstance(data, BaseModel):
+            payload = data.model_dump()
+        else:
+            payload = data
+        text = json.dumps(payload, indent=2, ensure_ascii=False)
 
     # ----- Steps -----
     def generate_meta(self) -> BookMeta:
@@ -489,19 +601,20 @@ class BookBuilder:
             reading_level=self.reading_level, style=self.style
         )
         text = self.llm.complete(SYSTEM_POLICY, prompt, temperature=self.temperature, max_tokens=1200, model=self.model)
+        
         try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            data = {
-                "title": "Untitled Book",
-                "subtitle": "A Project Generated by AI",
-                "author": "Anonymous",
-                "genre": self.genre,
-                "audience": self.audience,
-                "reading_level": self.reading_level,
-                "style": self.style,
-                "promise": "A fresh perspective created from a single idea.",
-            }
+            data = _parse_or_repair_json(text, schema_hint="title, subtitle, author, genre, audience, reading_level, style, promise")
+        except Exception:
+            data = {  # safe fallback
+        "title": "Untitled Book",
+        "subtitle": "A Project Generated by AI",
+        "author": "Anonymous",
+        "genre": self.genre,
+        "audience": self.audience,
+        "reading_level": self.reading_level,
+        "style": self.style,
+        "promise": "A fresh perspective created from a single idea.",}
+
         self.meta = BookMeta(**data)
         self._save_json(self.plan_dir / "meta.json", self.meta)
         self.checkpoint.log({"stage": "meta", "meta": self.meta.model_dump()})
@@ -512,16 +625,21 @@ class BookBuilder:
             return self.plan
         meta = self.generate_meta()
         prompt = PLAN_PROMPT.format(
-            meta_json=meta.model_dump_json(indent=2, ensure_ascii=False),
+            #meta_json=meta.model_dump_json(indent=2, ensure_ascii=False),
+            meta_json=json.dumps(meta.model_dump(), indent=2, ensure_ascii=False),
             idea=self.idea,
             min_words=self.min_words,
             max_words=self.max_words,
         )
-        text = self.llm.complete(SYSTEM_POLICY, prompt, temperature=0.6, max_tokens=4000, model=self.model)
+        text = self.llm.complete(SYSTEM_POLICY, prompt, temperature=1, max_tokens=4000, model=self.model)
         try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            raise RuntimeError("Failed to parse plan JSON from the model. Inspect plan/ folder.")
+            data = _parse_or_repair_json(
+            text,
+            schema_hint="synopsis (str), parts (list[str]), chapters (list of {number,int; title,str; purpose,str; key_points,list[str]; target_words,int; sections,list[{title,summary}]}), total_target_words (int)")
+        except Exception:
+                (self.plan_dir / "plan_raw.txt").write_text(text, encoding="utf-8")
+                raise RuntimeError("Failed to parse plan JSON (see plan/plan_raw.txt).")
+        
         self.plan = BookPlan(**data)
         self._save_json(self.plan_dir / "plan.json", self.plan)
         (self.plan_dir / "synopsis.md").write_text(self.plan.synopsis, encoding="utf-8")
@@ -553,9 +671,12 @@ class BookBuilder:
             ch_num=ch.number,
             ch_title=ch.title,
             target_words=ch.target_words,
-            meta_json=meta.model_dump_json(indent=2, ensure_ascii=False),
+            #meta_json=meta.model_dump_json(indent=2, ensure_ascii=False),
             synopsis=plan.synopsis,
-            chapter_json=ch.model_dump_json(indent=2, ensure_ascii=False),
+            #chapter_json=ch.model_dump_json(indent=2, ensure_ascii=False),
+            meta_json=json.dumps(meta.model_dump(), indent=2, ensure_ascii=False),
+            chapter_json=json.dumps(ch.model_dump(), indent=2, ensure_ascii=False),
+
             prev_titles="\n".join(f"- {t}" for t in prev_titles) if prev_titles else "(none)",
             bib_keys=bib_keys,
         )
@@ -782,7 +903,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--max-words", type=int, default=125_000)
     p.add_argument("--backend", type=str, choices=["openai", "anthropic", "ollama", "local"], default="openai")
     p.add_argument("--model", type=str, default="gpt-4.1")
-    p.add_argument("--temperature", type=float, default=0.7)
+    p.add_argument("--temperature", type=float, default=1)
     p.add_argument("--outdir", type=Path, default=Path("./book_out"))
     p.add_argument("--resume", action="store_true", help="Resume from existing plan/chapters if present.")
     p.add_argument("--no-exports", action="store_true", help="Skip EPUB/DOCX/PDF exports; keep Markdown only.")

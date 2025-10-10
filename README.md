@@ -29,6 +29,15 @@ Generate a full‑length e‑book from a **single idea**. The script plans the o
 # Core deps
 python -m pip install 'pydantic==2.*' 'rich==13.*' 'tqdm==4.*' 'tenacity==8.*' 'python-dateutil==2.*' 'requests==2.*'
 
+python -m pip install "markdown==3.*" "beautifulsoup4==4.*" "ebooklib==0.*" "python-docx==1.*"
+# For better PDF (recommended):
+python -m pip install "pypandoc-binary==1.*"
+# Or HTML->PDF backend:
+python -m pip install "weasyprint==61.*" "tinycss2==1.*" "cssselect2==0.*"
+# Fallback-only PDF:
+python -m pip install "reportlab==4.*"
+
+
 # Backend (pick one)
 python -m pip install 'openai==1.*'             # OpenAI
 # python -m pip install 'anthropic==0.*'        # Anthropic
@@ -39,6 +48,8 @@ python -m pip install 'ebooklib==0.*' 'markdown==3.*' 'python-docx==1.*' 'report
 
 # Optional: if you plan to pass --bibtex
 python -m pip install 'bibtexparser==1.*'
+
+
 ```
 > zsh users: quote the `==1.*` style pins (as shown) to avoid globbing errors.
 
@@ -148,7 +159,13 @@ Run `python ebook_generator.py -h` for full help. Key options:
 - `--min-words` / `--max-words`: total manuscript target.
 - `--backend` (`openai` | `anthropic` | `ollama` | `local`) and `--model`.
 - `--outdir` (path), `--resume`, `--no-exports`.
-- **Citations**: `--auto-cite` (Crossref), `--bibtex` (path to .bib), `--citations-json` (path to JSON).
+
+python md_to_book.py \
+  --input (path)/book.md \
+  --outdir (path) \
+  --title "Your Book Title" \
+  --author "Your Name" \
+  --all
 
 ---
 

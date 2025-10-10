@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
+"""
+ebook_generator_resilient_v3.py
+--------------------------------
+Robust AI book generator (OpenAI backend) that:
+- Plans (strict JSON), drafts with retries/fallbacks, assembles Markdown
+- Auto-cites via Crossref (no fabricated citations)
+- Outputs a single book.md; convert to EPUB/DOCX/PDF with md_to_book.py
+- NEW: --no-figures flag to suppress figure/table placeholders
+- NEW: APA-style References chapter
+"""
 from __future__ import annotations
 
 import argparse, json, os, re, time
@@ -150,10 +159,11 @@ Template:
       "title": "Chapter title",
       "purpose": "What this chapter achieves",
       "key_points": ["point A", "point B", "point C"],
-      "target_words": 2500,
+      "target_words": 2400,
       "sections": [
         {{"title": "Section A", "summary": "What this section covers"}},
-        {{"title": "Section B", "summary": "What this section covers"}}
+        {{"title": "Section B", "summary": "What this section covers"}},
+        {{"title": "Section C", "summary": "What this section covers"}}
       ]
     }}
   ]
@@ -195,6 +205,7 @@ Follow the book's voice and the section summary strictly.
 
 Output plain Markdown prose (no JSON), ~{words} words.
 Use `### {section_title}` as the section heading.
+{no_fig_rules}
 
 Citations:
 - If a suitable key exists in the bibliography list, cite with `[@key]` near relevant claims.
@@ -248,10 +259,6 @@ class OpenAIClient:
         return getattr(r2, "output_text", None) or ""
 
     def structured(self, system: str, prompt: str, *, max_tokens: int = 2000, model: Optional[str] = None) -> dict:
-        """
-        Return a dict parsed from model output. Tries chat+json_object, Responses API,
-        then a tagged-JSON extraction. Raises LLMError if all fail.
-        """
         m = model or self.model
         # A) chat.completions with response_format=json_object
         try:
@@ -348,7 +355,6 @@ def search_crossref(query: str, rows: int = 5, min_year: int = 2000) -> List[Ref
             if nm: names.append(nm)
         authors = " and ".join(names)
         venue = (it.get("container-title") or [""])[0] or ""
-        # Robust key seed
         base_source = (authors_list[0].get("family") if authors_list and isinstance(authors_list[0], dict) else None) \
                       or (title.split()[0] if title else "") \
                       or "ref"
@@ -381,7 +387,7 @@ class BookBuilder:
                  reading_level: str, style: str, min_words: int, max_words: int,
                  plan_model: str, draft_model: str, auto_cite: bool,
                  min_chapters: int, max_chapters: int, fallback_model: Optional[str],
-                 draft_retries: int, section_fallback: bool):
+                 draft_retries: int, section_fallback: bool, no_figures: bool):
         self.llm = llm
         self.outdir = outdir
         self.plan_dir = outdir / "plan"
@@ -395,6 +401,7 @@ class BookBuilder:
         self.fallback_model = fallback_model
         self.draft_retries = draft_retries
         self.section_fallback = section_fallback
+        self.no_figures = no_figures
         self.plan_dir.mkdir(parents=True, exist_ok=True)
         self.chapters_dir.mkdir(parents=True, exist_ok=True)
         self.meta: Optional[BookMeta] = None
@@ -497,13 +504,25 @@ class BookBuilder:
         self._log({"stage":"plan","total_target_words":self.plan.total_target_words,"chapters":len(self.plan.chapters)})
         return self.plan
 
+    def _chapter_common_rules(self) -> str:
+        if self.no_figures:
+            return (
+                "Rules:\\n"
+                "- Do NOT include any figure or table placeholders.\\n"
+                "- Do NOT use image syntax or captions.\\n"
+            )
+        return (
+            "Optional figure/table placeholders are allowed (e.g., *[Figure: ...]*), but do not invent data."
+        )
+
     def _draft_whole_chapter(self, ch: ChapterPlan, prev_titles: List[str], model: str) -> str:
         meta = self.generate_meta(); plan = self.generate_plan()
         if self.auto_cite and not self.bibliography:
             refs = collect_refs_for_chapter(ch.title, ch.key_points)
             self.bibliography.update(refs)
 
-        bib_keys = "\n".join(f"- {v.get('title','(untitled)')} → {k}" for k,v in self.bibliography.items()) or "(none provided)"
+        bib_keys = "\\n".join(f"- {v.get('title','(untitled)')} → {k}" for k,v in self.bibliography.items()) or "(none provided)"
+        no_fig_rules = self._chapter_common_rules()
 
         prompt = f"""
 Draft Chapter {ch.number}: "{ch.title}" for the book below. Use the plan faithfully.
@@ -512,7 +531,7 @@ Target ~{ch.target_words} words (±10%).
 Include:
 - *Italicized* opener (1–2 sentences).
 - Markdown H3 section headings (### Title).
-- Optional figure/table placeholders like *[Figure: ...]*, no invented data.
+- {no_fig_rules}
 - End with 3–5 reflective questions as bullets.
 
 Citations policy:
@@ -542,21 +561,22 @@ Previously drafted chapter titles:
         if self.auto_cite and not self.bibliography:
             refs = collect_refs_for_chapter(ch.title, ch.key_points)
             self.bibliography.update(refs)
-        bib_keys = "\n".join(f"- {v.get('title','(untitled)')} → {k}" for k,v in self.bibliography.items()) or "(none provided)"
+        bib_keys = "\\n".join(f"- {v.get('title','(untitled)')} → {k}" for k,v in self.bibliography.items()) or "(none provided)"
         words_per = max(300, int(ch.target_words / max(len(ch.sections), 1)))
+        no_fig_rules = "Rules:\\n- Do NOT include any figure or table placeholders.\\n- Do NOT use image syntax or captions.\\n" if self.no_figures else ""
 
         parts = [f"# {meta.title}: {ch.title}", ""]
-        parts.append("_This chapter explores the topic in depth, linking methods and evidence with practical implications._\n")
+        parts.append("_This chapter explores the topic in depth, linking methods and evidence with practical implications._\\n")
         for sec in ch.sections:
             prompt = SECTION_DRAFT_PROMPT.format(
                 section_title=sec.title, ch_num=ch.number, ch_title=ch.title,
                 words=words_per, summary=sec.summary,
                 meta_json=json.dumps(meta.model_dump(), indent=2, ensure_ascii=False),
-                synopsis=plan.synopsis, bib_keys=bib_keys
+                synopsis=plan.synopsis, bib_keys=bib_keys, no_fig_rules=no_fig_rules
             )
             text = self.llm.complete(SYSTEM_POLICY, prompt, max_tokens=1800, model=model).strip()
             if not text.startswith("### "):
-                text = f"### {sec.title}\n\n{text}"
+                text = f"### {sec.title}\\n\\n{text}"
             parts.append(text)
             parts.append("")
             time.sleep(0.15)
@@ -564,56 +584,95 @@ Previously drafted chapter titles:
         parts.append("- What assumptions were challenged in this section?")
         parts.append("- Which methods are most robust, and why?")
         parts.append("- Where could future research resolve uncertainties?")
-        return "\n".join(parts).strip() + "\n"
+        return "\\n".join(parts).strip() + "\\n"
 
     def draft_chapter(self, ch: ChapterPlan, prev_titles: List[str]) -> str:
-        # try whole chapter
-        for attempt in range(2):
+        for attempt in range(self.draft_retries):
             txt = self._draft_whole_chapter(ch, prev_titles, self.draft_model)
             (self.chapters_dir / f"ch{ch.number:02d}_raw_attempt{attempt+1}.txt").write_text(txt, encoding="utf-8")
             if len(txt) > 300:
-                return f"# {self.generate_meta().title}: {ch.title}\n\n{txt}\n"
+                return f"# {self.generate_meta().title}: {ch.title}\\n\\n{txt}\\n"
             time.sleep(0.4)
-
-        # fallback model
         if self.fallback_model:
             txt = self._draft_whole_chapter(ch, prev_titles, self.fallback_model)
             (self.chapters_dir / f"ch{ch.number:02d}_raw_fallback.txt").write_text(txt, encoding="utf-8")
             if len(txt) > 300:
-                return f"# {self.generate_meta().title}: {ch.title}\n\n{txt}\n"
-
-        # section-by-section fallback
+                return f"# {self.generate_meta().title}: {ch.title}\\n\\n{txt}\\n"
         if self.section_fallback:
             doc = self._draft_by_sections(ch, self.fallback_model or self.draft_model)
             (self.chapters_dir / f"ch{ch.number:02d}_section_fallback.md").write_text(doc, encoding="utf-8")
             if len(doc) > 300:
                 return doc
-
         raise RuntimeError(f"Chapter {ch.number} draft came back empty after retries and fallbacks.")
 
-    def assemble_references(self, manuscript: str) -> str:
-        cited = set()
-        for m in re.findall(r"\[@([^\]]+)\]", manuscript):
-            for key in re.split(r"[;,]\s*", m):
-                key = key.strip(" @")
-                if key: cited.add(key)
-        if not cited: return ""
+    # --- APA references ---
+    def _apa_author_list(self, authors_str: str) -> str:
+        parts = [a.strip() for a in re.split(r"\\s+and\\s+|,\\s*(?=[A-Z][a-z]+,)", authors_str) if a.strip()]
+        def initials(name):
+            if "," in name:
+                last, firsts = [x.strip() for x in name.split(",", 1)]
+            else:
+                toks = name.split()
+                last, firsts = toks[-1], " ".join(toks[:-1])
+            inits = " ".join(f"{w[0]}." for w in re.split(r"[\\s\\-]+", firsts) if w)
+            return f"{last}, {inits}".strip()
+        formatted = [initials(p) for p in parts[:20]]
+        if len(formatted) <= 2:
+            return " & ".join(formatted)
+        return ", ".join(formatted[:-1]) + ", & " + formatted[-1]
+
+    def _format_bibliography_apa(self, keys: List[str]) -> str:
         lines = []
-        for k in sorted(cited):
+        for k in keys:
             e = self.bibliography.get(k)
             if not e:
                 lines.append(f"- **MISSING** citation for key `{k}`")
                 continue
             authors = e.get("author") or e.get("authors") or ""
-            year = e.get("year") or e.get("date","")[:4]
-            title = e.get("title","Untitled")
+            year = (e.get("year") or e.get("date","")[:4] or "n.d.").strip()
+            title = e.get("title","Untitled").rstrip(".")
             journal = e.get("journal") or e.get("booktitle") or e.get("publisher") or ""
+            volume = e.get("volume",""); issue = e.get("number") or e.get("issue","")
+            pages = e.get("pages","")
             doi = e.get("doi",""); url = e.get("url","")
-            tail = f" {journal}" if journal else ""
-            if doi: tail += f". DOI: {doi}"
-            if url: tail += f". {url}"
-            lines.append(f"- {authors} ({year}). *{title}*.{tail}")
-        return "\n".join(lines)
+
+            author_apa = self._apa_author_list(authors) if authors else ""
+            core = f"{author_apa} ({year}). {title}."
+            if journal:
+                core += f" *{journal}*"
+                if volume:
+                    core += f", *{volume}*"
+                    if issue:
+                        core += f"({issue})"
+                if pages:
+                    core += f", {pages}"
+                core += "."
+            if doi:
+                core += f" https://doi.org/{doi.lstrip('https://doi.org/').lstrip('doi:').strip()}"
+            elif url:
+                core += f" {url}"
+            lines.append(f"- {core}")
+        return "\\n".join(lines)
+
+    def _extract_citekeys(self, text: str) -> List[str]:
+        keys = set(re.findall(r"\\[@([^\\]]+)\\]", text))
+        expanded = set()
+        for k in keys:
+            for part in re.split(r"[;,]\\s*", k):
+                if part:
+                    expanded.add(part.strip(" @"))
+        return sorted(expanded)
+
+    def _strip_fig_placeholders(self, text: str) -> str:
+        text = re.sub(r'^\\s*\\*?\\[Figure:[^\\]]*\\]\\*?\\s*$', '', text, flags=re.M)
+        text = re.sub(r'^\\s*!\\[[^\\]]*\\]\\([^)]+\\)\\s*$', '', text, flags=re.M)
+        text = re.sub(r'\\n{3,}', '\\n\\n', text)
+        return text
+
+    def assemble_references(self, manuscript: str) -> str:
+        cited = set(self._extract_citekeys(manuscript))
+        if not cited: return ""
+        return self._format_bibliography_apa(sorted(cited))
 
     def run(self):
         meta = self.generate_meta()
@@ -622,7 +681,8 @@ Previously drafted chapter titles:
         chapter_docs: List[str] = []
         prev_titles: List[str] = []
         for ch in tqdm(plan.chapters, desc="Drafting chapters"):
-            ch_path = self.chapters_dir / f"{ch.number:02d}_{re.sub(r'[^A-Za-z0-9_-]+','', ch.title.replace(' ','_'))}.md"
+            safe = re.sub(r'[^A-Za-z0-9_-]+','', ch.title.replace(' ','_'))[:120]
+            ch_path = self.chapters_dir / f"{ch.number:02d}_{safe}.md"
             if ch_path.exists() and ch_path.stat().st_size > 100:
                 chapter_docs.append(ch_path.read_text(encoding="utf-8"))
                 prev_titles.append(ch.title)
@@ -650,11 +710,13 @@ Previously drafted chapter titles:
 ---
 
 """
-        manuscript = front + "\n\n".join(chapter_docs)
+        manuscript = front + "\\n\\n".join(chapter_docs)
+        if self.no_figures:
+            manuscript = self._strip_fig_placeholders(manuscript)
 
         refs_md = self.assemble_references(manuscript)
         if refs_md:
-            manuscript += "\n\n---\n\n# References\n\n" + refs_md + "\n"
+            manuscript += "\\n\\n---\\n\\n# References (APA)\\n\\n" + refs_md + "\\n"
 
         (self.outdir / "book.md").write_text(manuscript, encoding="utf-8")
         self._log({"stage":"assemble","path": str(self.outdir / "book.md")})
@@ -662,7 +724,7 @@ Previously drafted chapter titles:
 
 # ---------- CLI ----------
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Generate a full e-book from a single idea.")
+    p = argparse.ArgumentParser(description="Generate a full e-book from a single idea (Markdown output).")
     p.add_argument("--idea", type=str, required=True)
     p.add_argument("--genre", type=str, default="non-fiction")
     p.add_argument("--audience", type=str, default="general audience")
@@ -672,7 +734,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-words", type=int, default=30000)
     p.add_argument("--backend", type=str, choices=["openai"], default="openai")
     p.add_argument("--model", type=str, default="gpt-4.1", help="Default model (used if plan/draft not set).")
-    p.add_argument("--plan-model", type=str, default="", help="Model for meta/plan JSON (recommended: gpt-4.1 or gpt-4o).")
+    p.add_argument("--plan-model", type=str, default="", help="Model for meta/plan JSON (e.g., gpt-4.1 or gpt-4o).")
     p.add_argument("--draft-model", type=str, default="", help="Model for chapter drafting (e.g., gpt-5).")
     p.add_argument("--fallback-model", type=str, default="gpt-4o", help="Secondary model if the draft model returns empty.")
     p.add_argument("--outdir", type=Path, default=Path("./book_out"))
@@ -681,6 +743,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-chapters", type=int, default=22, help="Maximum chapters allowed in the plan.")
     p.add_argument("--draft-retries", type=int, default=2, help="Whole-chapter drafting attempts before fallback.")
     p.add_argument("--no-section-fallback", action="store_true", help="Disable per-section drafting fallback.")
+    p.add_argument("--no-figures", action="store_true", help="Do not include figure/table placeholders or images.")
     return p.parse_args()
 
 def main():
@@ -716,6 +779,7 @@ def main():
         fallback_model=args.fallback_model,
         draft_retries=args.draft_retries,
         section_fallback=not args.no_section_fallback,
+        no_figures=args.no_figures,
     )
     builder.run()
 

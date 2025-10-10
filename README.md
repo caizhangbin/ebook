@@ -55,16 +55,18 @@ export OPENAI_API_KEY="sk-..."
 ## Quick start
 ### A. Quality‑focused (OpenAI, 200 pages ~50–60k words)
 ```bash
-python ebook_generator.py \
+export OPENAI_API_KEY="your key"
+python /ebook/ebook_generator.py \
   --idea "A microbiologist uses AI to decode the hidden ecology of dairy farm microbes" \
   --genre "textbook" \
   --audience "upper-undergrad and graduate students" \
   --reading-level "university" \
   --style "scholarly, rigorous, precise" \
-  --min-words 50000 --max-words 60000 \
-  --backend openai --model gpt-5 \
+  --min-words 20000 --max-words 30000 \
+  --plan-model gpt-4.1 \
+  --draft-model gpt-5 \
   --auto-cite \
-  --outdir ./book_out
+  --outdir ./book_out_auto
 ```
 
 ### B. Budget/Local (Ollama, smoke test ~20–30k words)

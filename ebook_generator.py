@@ -655,7 +655,8 @@ Previously drafted chapter titles:
         return "\\n".join(lines)
 
     def _extract_citekeys(self, text: str) -> List[str]:
-        keys = set(re.findall(r"\\[@([^\\]]+)\\]", text))
+        #keys = set(re.findall(r"\\[@([^\\]]+)\\]", text))
+        keys = set(re.findall(r"\[@([^\]]+)\]", text))
         expanded = set()
         for k in keys:
             for part in re.split(r"[;,]\\s*", k):
@@ -663,11 +664,16 @@ Previously drafted chapter titles:
                     expanded.add(part.strip(" @"))
         return sorted(expanded)
 
+    
     def _strip_fig_placeholders(self, text: str) -> str:
-        text = re.sub(r'^\\s*\\*?\\[Figure:[^\\]]*\\]\\*?\\s*$', '', text, flags=re.M)
-        text = re.sub(r'^\\s*!\\[[^\\]]*\\]\\([^)]+\\)\\s*$', '', text, flags=re.M)
-        text = re.sub(r'\\n{3,}', '\\n\\n', text)
+    # Remove Markdown image lines like: ![alt](url)
+        text = re.sub(r'^\s*!\[[^\]]*\]\([^)]+\)\s*$', '', text, flags=re.M)
+    # Remove plain "Figure:" placeholders, optionally italicized with *...*
+        text = re.sub(r'^\s*\*?\[?Figure:[^\]\n]*\]?\*?\s*$', '', text, flags=re.M)
+    # Collapse extra blank lines
+        text = re.sub(r'\n{3,}', '\n\n', text)
         return text
+
 
     def assemble_references(self, manuscript: str) -> str:
         cited = set(self._extract_citekeys(manuscript))

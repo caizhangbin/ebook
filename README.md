@@ -52,7 +52,10 @@ pdflatex --version   # should print a version
 
 
 # (Optional) converters for EPUB/DOCX/PDF
-python -m pip install 'pypandoc-binary==1.*' 'markdown==3.*' 'beautifulsoup4==4.*' 'reportlab==4.*'
+python -m pip install 'requests==2.*' 'markdown==3.*' 'beautifulsoup4==4.*' \
+                      'weasyprint==61.*' 'reportlab==4.*'
+# Make sure pandoc + a TeX engine (XeLaTeX) are installed for best PDFs.
+
 ```
 
 > **zsh tip:** quote pins like `'openai==1.*'` to avoid globbing errors.

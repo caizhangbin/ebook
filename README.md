@@ -64,7 +64,7 @@ export OPENAI_API_KEY="sk-..."
 Generate a ~20–30k-word textbook with APA references and **no figure placeholders**:
 
 ```bash
-python ebook_generator_resilient_v3.py \
+python ebook_generator.py \
   --idea "A microbiologist uses AI to decode the hidden ecology of dairy farm microbes" \
   --genre "textbook" \
   --audience "upper-undergrad and graduate students" \
@@ -231,7 +231,7 @@ MIT
 **Generate (no figures, with APA references):**
 
 ```bash
-python ebook_generator_resilient_v3.py \
+python ebook_generator.py \
   --idea "..." --genre "textbook" \
   --audience "upper-undergrad and graduate students" \
   --reading-level "university" \

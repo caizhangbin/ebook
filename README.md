@@ -45,6 +45,12 @@ This Generator plans the book, drafts each chapter, **auto-cites** scholarly sou
 # Core
 python -m pip install 'openai==1.*' 'pydantic==2.*' 'tenacity==8.*' 'tqdm==4.*' 'requests==2.*'
 
+brew install --cask mactex-no-gui
+# then ensure TeX binaries are on PATH:
+echo 'export PATH="/Library/TeX/texbin:$PATH"' >> ~/.zshrc && source ~/.zshrc
+pdflatex --version   # should print a version
+
+
 # (Optional) converters for EPUB/DOCX/PDF
 python -m pip install 'pypandoc-binary==1.*' 'markdown==3.*' 'beautifulsoup4==4.*' 'reportlab==4.*'
 ```

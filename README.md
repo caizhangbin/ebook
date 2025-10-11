@@ -1,188 +1,187 @@
-# AI e-Book Generator
+# AI Book Builder
 
-Create a full e-book from a single idea. 
+A Book Builder pipeline to go from a **single idea** → **planned outline** → **drafted chapters with a progress bar** → **clean Markdown manuscript**, then convert to **EPUB/DOCX/PDF**.
+This README matches the versions you’re running:
+
+* `ebook_generator_legacy_like.py` (planner/drafter)
+* `md_to_book_legacy_like.py` (converter with **auto ToC rebuild**)
+
+
+* `--plan-model gpt-4.1`
+* `--draft-model gpt-5` (with fallback to `gpt-4.1`)
+* `--fallback-model gpt-4.1`
+* `--no-figures` to suppress figure placeholders
+
+
 ---
 
-
-
-## Install
+## 1) Install
 
 ```bash
-# Python 3.9+ recommended
-python -m pip install "openai==1.*" "requests==2.*"
+# Core libs
+python -m pip install "openai==1.*" "tqdm==4.*" "rich==13.*" "requests==2.*" "pydantic==2.*" "tenacity==8.*"
 
-# Optional (for the converter & exports)
-python -m pip install "pypandoc-binary==1.*"
-
-# If you want XeLaTeX PDFs on macOS:
-# brew install --cask mactex-no-gui
-# echo 'export PATH="/Library/TeX/texbin:$PATH"' >> ~/.zshrc && source ~/.zshrc
-# pdflatex --version   # sanity check
+# Converters
+python -m pip install "markdown==3.*" "beautifulsoup4==4.*" "ebooklib==0.*" "python-docx==1.*" "reportlab==4.*"
 ```
 
-> zsh users: always quote pins like `"openai==1.*"` to avoid globbing.
+> zsh users: always **quote** version pins (e.g., `"openai==1.*"`) to avoid globbing errors.
+
+### API key
+
+```bash
+export OPENAI_API_KEY="sk-..."   # required for OpenAI
+```
 
 ---
 
-## Quick start
+## 2) Generate the Book
 
-### 1) Generate the manuscript (Markdown)
-
-**OpenAI**
+Example (stocks book):
 
 ```bash
-export OPENAI_API_KEY="sk-..."
-python ebook_generator_full.py \
-  --idea "A microbiologist uses AI to decode the hidden ecology of dairy farm microbes" \
-  --genre "textbook" \
-  --audience "upper-undergrad and graduate students" \
-  --reading-level "university" \
-  --style "scholarly, rigorous, precise" \
+python /Users/you/ebook_generator.py \
+  --idea "your idea" \
+  --genre "Technical" \
+  --reading-level "High school" \
+  --style "rigorous, precise" \
   --min-words 20000 --max-words 30000 \
-  --backend openai --model gpt-4.1 \
-  --auto-cite \
-  --no-pictures \
-  --outdir ./book_out
+  --plan-model gpt-4.1 \
+  --draft-model gpt-5 \
+  --fallback-model gpt-4.1 \
+  --author "your name" \
+  --no-figures \
+  --outdir ./book_stock
 ```
 
-**Local (Ollama)**
+### What it does
 
-```bash
-# ollama pull llama3.1
-python ebook_generator.py \
-  --idea "Intro to practical Bayesian stats" \
-  --genre "popular science" \
-  --reading-level "college" \
-  --min-words 10000 --max-words 15000 \
-  --backend ollama --model llama3.1 \
-  --outdir ./book_out_local
-```
+1. Plans: metadata → synopsis → parts → chapters (robust JSON parsing + repair).
+2. Drafts chapters with a **tqdm** progress bar.
+3. Produces `book.md` with a **plain, non-linked** Table of Contents (fastest, least brittle).
+4. Reduces “AI-voice” quirks (fewer awkward dashes/midsentence hyphens).
 
-> Defaults: if you omit `--audience`, **"general audience"** is used.
+### Notes on models
 
-You’ll get:
+* If `gpt-5` isn’t available/allowed for your key (or rejects params), the script **auto-falls back to `gpt-4.1`** and continues drafting.
+* For maximum stability, set:
 
-```
-book_out/
-├─ plan/               # meta/plan and raw model outputs
-├─ chapters/           # per-chapter drafts (Markdown)
-└─ book.md             # full manuscript
-```
+  ```bash
+  --plan-model gpt-4.1 --draft-model gpt-4.1 --fallback-model gpt-4.1
+  ```
 
 ---
 
-### 2) Make the book polished (optional but recommended)
+## 3) Convert Markdown → EPUB/DOCX/PDF (with ToC Auto-Sync)
 
 ```bash
-python md_to_book.py \
-  --input ./book_out/book.md \
-  --outdir ./book_out \
-  --title "Statistical Methods in Microbiology" \
-  --author "Your name" \
+python /Users/you/md_to_book_legacy_like.py \
+  --input ./book_stock/book.md \
+  --outdir ./book_stock \
+  --title "A Rigorous Guide to Building Wealth Through Stock Investing" \
+  --author "your name" \
   --all
 ```
 
-What this does:
+### What it does
 
-* Adds **clickable TOC** and **stable anchors** (`{#chapter-1-…}`) to `book.md`
-* Converts `[@keys]` → “(Author, Year)”, writes **# References (APA)** and `citations.bib`
-* Exports **EPUB/DOCX/PDF**
+* **Auto-rebuilds the ToC** in your Markdown from `#` headings **by default** every run.
 
-**To remove all citations in export:** add `--strip-citations`.
+  * To keep your manual ToC, pass `--no-rebuild-toc`.
+* **EPUB**: split by H1 headings (`#`), reader-side navigation included.
+* **DOCX**: markdown → HTML → python-docx (clean and dependable).
+* **PDF**: ReportLab renderer (simple, no LaTeX/WeasyPrint headaches).
 
----
+### Useful flags
 
-## Common workflows
-
-### Edit after generation
-
-* Open `book.md`, add/rename chapters, insert pictures:
-
-  ```md
-  ![Schematic of habitats](images/habitats.png){width=70%}
-  # New Chapter Title {#new-chapter}
-  ```
-* Re-run the converter:
-
-  ```bash
-  python md_to_book.py --input ./book_out/book.md --outdir ./book_out --all
-  ```
-
-  The TOC and pagination/bookmarks update automatically.
-
-### Skip images entirely
-
-* Run the generator with `--no-pictures`. This removes:
-
-  * image markdown: `![alt](path)`
-  * figure/table placeholders like `*[Figure: ...]*`
-
-### Citations
-
-* **`--auto-cite`**: Chapter prompts allow citing **only** known keys fetched from Crossref for that chapter; no fabricated refs.
-* **`--no-citations`**: Generator strips all citations from the final `book.md`.
-* **Converter**: Resolves remaining `[@keys]` into APA inline `(Author, Year)` and compiles a **References (APA)** chapter.
+* `--strip-citations` → remove `[@cite_key]` inline citations in the final book.
+* `--strip-figures` → remove image lines (e.g., `![alt](url)`) and `*[Figure: ...]*` placeholders.
+* `--no-rebuild-toc` → don’t touch your Table of Contents block.
 
 ---
 
-## Flags (generator)
+## 4) Folder Layout
 
-```txt
---idea               (str)  single-sentence core idea
---genre              (str)
---audience           (str)  default: "general audience"
---reading-level      (str)  e.g., "grade 10", "college", "university", "professional"
---style              (str)  voice/tone hints
---min-words          (int)  total target (book)
---max-words          (int)
---backend            (openai | ollama | local)
---model              (str)  e.g., gpt-4.1, llama3.1
---outdir             (path) output directory
-
---auto-cite                 enable Crossref lookups per chapter
---no-citations              strip all citations from the manuscript
---no-pictures               remove images and figure/table placeholders
+```
+book_stock/
+├─ plan/                 # planning artifacts (if generator writes them)
+├─ chapters/             # individual chapter drafts (if enabled)
+├─ book.md               # concatenated manuscript from generator
+├─ book.cleaned.md       # auto-cleaned (and ToC-synced) MD from converter
+├─ book.epub             # export
+├─ book.docx             # export
+└─ book.pdf              # export
 ```
 
 ---
 
-## Tips
+## 5) Style Tuning
 
-* **Length**: ~250–300 words/page (trade paperback).
+* **Reading level** examples: `"High school"`, `"college"`, `"university"`, `"professional/technical"`.
+* Pair with tone in `--style`, e.g., `"scholarly, rigorous, precise"` or `"engaging, clear"`.
 
-  * 20–30k words ≈ ~80–120 pages
-  * 50–60k words ≈ ~200 pages
-* **Stability**: If you keep custom anchors (`{#id}`) on headings, your section links stay stable even if you rename titles later.
-* **Retries**: If a chapter returns short, the generator auto-nudges once. You can delete a chapter `.md` file and rerun to regenerate just that chapter.
+**Make it less “AI-like”:**
 
----
-
-## Troubleshooting
-
-* **401 / missing key**: `export OPENAI_API_KEY="sk-..."` (for OpenAI).
-* **429 / quota**: reduce word targets, try a cheaper model, or Ollama.
-* **LaTeX/PDF errors**: ensure XeLaTeX is installed (`pdflatex --version`) and rerun `md_to_book_allinone_v3.py`.
-* **Weird line breaks**: generator normalizes `\n` artifacts and de-hyphenates splits; the converter also cleans common math markup.
-* **Figure text but no images**: add your own images in Markdown; or keep `--no-pictures` to suppress all figure placeholders.
+* Keep `--no-figures` if you don’t want those placeholders.
+* Post-edit with your own voice; the pipeline can be rerun as many times as you like.
+* The converter normalizes weird hyphenation across line breaks and replaces spaced hyphens with em-dashes.
 
 ---
 
-## FAQ
+## 6) FAQ
 
-**Can I use different models for planning vs drafting?**
-This v2 uses one model for simplicity. If you want split models again, say the word and we’ll provide a variant with `--plan-model/--draft-model/--fallback-model`.
+**Q: I edited `book.md`. Will the ToC update?**
+**A:** Yes. The converter rebuilds the ToC from your current headings by default.
 
-**Will TOC and pages update when I edit?**
-Yes. Re-run the converter; it rebuilds anchors/TOC and PDF pagination.
+**Q: The script prints “Primary model failed; trying fallback …”**
+**A:** That’s expected if `gpt-5` isn’t available/compatible. Drafts continue with `gpt-4.1`.
 
-**Can I add new chapters and pictures after AI finishes?**
-Yes—edit `book.md` freely and re-export.
+**Q: My PDF looks too simple.**
+**A:** ReportLab is intentionally minimal and dependable. If you want rich typographic PDFs, we can add a Pandoc/LaTeX path later, but it’s more brittle.
 
-**What if I don’t want any citations?**
-Use the generator with `--no-citations`, or the converter with `--strip-citations`.
+**Q: I don’t want citations or figures.**
+**A:** Use `--strip-citations` and/or `--strip-figures` with the converter.
 
 ---
 
-## License
+## 7) Troubleshooting
 
-MIT.
+* **401 / Missing key**: `export OPENAI_API_KEY="sk-..."`
+* **429 / Quota**: add billing or switch to `--draft-model gpt-4.1`.
+* **Drafting stalls on a chapter**: it will retry once; if still empty, reduce target words or run again.
+* **Strange hyphenation (e.g., “Introduc-\ntion”)**: converter fixes this automatically.
+* **Formulas look off**: keep math inline as `$ ... $` in the Markdown; ReportLab doesn’t render LaTeX, but will display the math text cleanly.
+
+---
+
+## 8) Example End-to-End
+
+```bash
+# 1) Generate manuscript
+python ebook_generator.py \
+  --idea "how to make stay healthy" \
+  --genre "Technical" \
+  --reading-level "High school" \
+  --style "rigorous, precise" \
+  --min-words 20000 --max-words 30000 \
+  --plan-model gpt-4.1 \
+  --draft-model gpt-5 \
+  --fallback-model gpt-4.1 \
+  --author "Xavier J" \
+  --no-figures \
+  --outdir ./book_stock
+
+# 2) Convert to EPUB/DOCX/PDF (ToC auto-sync)
+python md_to_book_legacy_like.py \
+  --input ./book_stock/book.md \
+  --outdir ./book_stock \
+  --title "A Rigorous Guide to Body Building" \
+  --author "Xavier J" \
+  --all
+```
+
+---
+
+## 9) License
+
+MIT

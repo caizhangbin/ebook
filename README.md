@@ -159,7 +159,7 @@ book_stock/
 ```bash
 # 1) Generate manuscript
 python ebook_generator.py \
-  --idea "how to make stay healthy" \
+  --idea "how to stay healthy" \
   --genre "Technical" \
   --reading-level "High school" \
   --style "rigorous, precise" \

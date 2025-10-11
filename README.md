@@ -105,7 +105,7 @@ What this does:
 * Re-run the converter:
 
   ```bash
-  python md_to_book_allinone_v3.py --input ./book_out/book.md --outdir ./book_out --all
+  python md_to_book.py --input ./book_out/book.md --outdir ./book_out --all
   ```
 
   The TOC and pagination/bookmarks update automatically.

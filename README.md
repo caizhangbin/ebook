@@ -40,7 +40,7 @@ export OPENAI_API_KEY="sk-..."   # required for OpenAI
 Example:
 
 ```bash
-python /Users/you/ebook_generator.py \
+python ebook_generator.py \
   --idea "your idea" \
   --genre "Technical" \
   --reading-level "High school" \
@@ -51,7 +51,7 @@ python /Users/you/ebook_generator.py \
   --fallback-model gpt-4.1 \
   --author "your name" \
   --no-figures \
-  --outdir ./book_stock
+  --outdir 
 ```
 
 ### What it does
@@ -75,9 +75,9 @@ python /Users/you/ebook_generator.py \
 ## 3) Convert Markdown → EPUB/DOCX/PDF (with ToC Auto-Sync)
 
 ```bash
-python /Users/you/md_to_book_legacy_like.py \
-  --input ./book_stock/book.md \
-  --outdir ./book_stock \
+python md_to_book_legacy_like.py \
+  --input book.md \
+  --outdir ./output_dir \
   --title "Book Title" \
   --author "your name" \
   --all
@@ -169,12 +169,12 @@ python ebook_generator.py \
   --fallback-model gpt-4.1 \
   --author "Xavier J" \
   --no-figures \
-  --outdir ./book_stock
+  --outdir ./book
 
 # 2) Convert to EPUB/DOCX/PDF (ToC auto-sync)
 python md_to_book_legacy_like.py \
-  --input ./book_stock/book.md \
-  --outdir ./book_stock \
+  --input ./book/book.md \
+  --outdir ./book \
   --title "A Rigorous Guide to Body Building" \
   --author "Xavier J" \
   --all

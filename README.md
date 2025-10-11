@@ -58,8 +58,8 @@ python /Users/you/ebook_generator.py \
 
 1. Plans: metadata → synopsis → parts → chapters (robust JSON parsing + repair).
 2. Drafts chapters with a **tqdm** progress bar.
-3. Produces `book.md` with a **plain, non-linked** Table of Contents (fastest, least brittle).
-4. Reduces “AI-voice” quirks (fewer awkward dashes/midsentence hyphens).
+3. Produces `book.md`.
+
 
 ### Notes on models
 

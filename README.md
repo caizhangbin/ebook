@@ -3,8 +3,8 @@
 A Book Builder pipeline to go from a **single idea** → **planned outline** → **drafted chapters** → **clean Markdown manuscript**, then convert to **EPUB/DOCX/PDF**.
 
 
-* `ebook_generator_legacy_like.py` (planner/drafter)
-* `md_to_book_legacy_like.py` (converter with **auto ToC rebuild**)
+* `ebook_generator.py` (planner/drafter)
+* `md_to_book.py` (converter with **auto ToC rebuild**)
 
 
 * `--plan-model gpt-4.1`

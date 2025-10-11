@@ -37,7 +37,7 @@ export OPENAI_API_KEY="sk-..."   # required for OpenAI
 
 ## 2) Generate the Book
 
-Example (stocks book):
+Example:
 
 ```bash
 python /Users/you/ebook_generator.py \

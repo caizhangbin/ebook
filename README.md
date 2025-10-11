@@ -78,7 +78,7 @@ python /Users/you/ebook_generator.py \
 python /Users/you/md_to_book_legacy_like.py \
   --input ./book_stock/book.md \
   --outdir ./book_stock \
-  --title "A Rigorous Guide to Building Wealth Through Stock Investing" \
+  --title "Book Title" \
   --author "your name" \
   --all
 ```

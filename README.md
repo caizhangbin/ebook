@@ -75,7 +75,7 @@ python ebook_generator.py \
 ## 3) Convert Markdown → EPUB/DOCX/PDF (with ToC Auto-Sync)
 
 ```bash
-python md_to_book_legacy_like.py \
+python md_to_book.py \
   --input book.md \
   --outdir ./output_dir \
   --title "Book Title" \
